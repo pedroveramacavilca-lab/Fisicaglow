@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-from datetime import datetime
 
 st.set_page_config(
     page_title="PhysiQ",
@@ -44,13 +43,6 @@ def init_state():
         "topic": TOPICS[0],
         "chat_history": [],         # historial del chat visible
         "gemini_history": [],       # historial para la API de Gemini (multi-turn)
-        "session_stats": {
-            "ejercicios": 0,
-            "conceptos": 0,
-            "temas_vistos": set(),
-            "inicio": datetime.now().strftime("%H:%M"),
-        },
-        "show_summary": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -94,72 +86,44 @@ Tema actual del estudiante: {topic}
 - Sé amigable, paciente y motivador — nunca condescendiente"""
 
 # ============================================================
-# FUNCIÓN PARA DETECTAR TIPO DE CONSULTA
-# ============================================================
-def detectar_tipo(mensaje):
-    keywords_ejercicio = ["calcula", "cuánto", "cuál es", "determina", "encuentra",
-                          "m/s", "kg", "newton", "joule", "=", "metros", "segundos",
-                          "datos", "resultado", "resolver", "problema"]
-    keywords_concepto = ["qué es", "explica", "por qué", "cómo funciona", "diferencia",
-                         "teorema", "ley", "concepto", "significa", "define", "entiendo"]
-    msg = mensaje.lower()
-    if any(k in msg for k in keywords_ejercicio):
-        return "ejercicio"
-    elif any(k in msg for k in keywords_concepto):
-        return "concepto"
-    return "general"
-
-# ============================================================
-# FUNCIÓN PRINCIPAL DE CHAT CON GEMINI (multi-turn)
+# FUNCIÓN PRINCIPAL DE CHAT CON GEMINI (multi-turn real)
 # ============================================================
 def chat_con_tutor(mensaje_usuario, topic):
     if not model:
         return "Error: no hay conexión con la IA."
 
-    tipo = detectar_tipo(mensaje_usuario)
-    if tipo == "ejercicio":
-        st.session_state.session_stats["ejercicios"] += 1
-    elif tipo == "concepto":
-        st.session_state.session_stats["conceptos"] += 1
-    st.session_state.session_stats["temas_vistos"].add(topic)
-
-    # Construir historial para Gemini
-    gemini_messages = []
-    for msg in st.session_state.gemini_history:
-        gemini_messages.append({
-            "role": msg["role"],
-            "parts": [msg["content"]]
-        })
-    gemini_messages.append({
-        "role": "user",
-        "parts": [mensaje_usuario]
-    })
-
     try:
-        chat = model.start_chat(history=gemini_messages[:-1])
+        # El modelo se crea con la instrucción del sistema ya incluida
+        chat_model = genai.GenerativeModel(
+            "gemini-2.5-flash",
+            system_instruction=build_system_prompt(topic)
+        )
+
+        # Reconstruir el historial previo en formato Gemini
+        gemini_messages = []
+        for msg in st.session_state.gemini_history:
+            gemini_messages.append({
+                "role": msg["role"],
+                "parts": [msg["content"]]
+            })
+
+        # Iniciar el chat CON el historial previo (esto da la continuidad real)
+        chat = chat_model.start_chat(history=gemini_messages)
+
         response = chat.send_message(
             mensaje_usuario,
             generation_config={"temperature": 0.7, "max_output_tokens": 1024},
-            system_instruction=build_system_prompt(topic)
         )
         respuesta = response.text.strip()
 
-        # Guardar en historial de Gemini para siguiente turno
+        # Guardar el turno en el historial para la siguiente consulta
         st.session_state.gemini_history.append({"role": "user", "content": mensaje_usuario})
         st.session_state.gemini_history.append({"role": "model", "content": respuesta})
 
         return respuesta
+
     except Exception as e:
-        # Fallback: llamada simple sin historial
-        try:
-            prompt_completo = build_system_prompt(topic) + f"\n\nEstudiante: {mensaje_usuario}"
-            response = model.generate_content(prompt_completo)
-            respuesta = response.text.strip()
-            st.session_state.gemini_history.append({"role": "user", "content": mensaje_usuario})
-            st.session_state.gemini_history.append({"role": "model", "content": respuesta})
-            return respuesta
-        except Exception as e2:
-            return f"Error de conexión: {e2}"
+        return f"Error de conexión con la IA: {e}"
 
 # ============================================================
 # ESTILOS DARK MODE
@@ -233,17 +197,6 @@ hr { border-color: rgba(255,255,255,0.07) !important; }
     color: #8B90A0;
     margin-bottom: 1rem;
 }
-
-.summary-card {
-    background: #1C2030;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 12px;
-}
-.summary-title { font-size: 16px; font-weight: 600; color: #E8EAF0; margin-bottom: 8px; }
-.summary-item { font-size: 13px; color: #8B90A0; margin: 4px 0; }
-.summary-item span { color: #E8EAF0; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -318,32 +271,13 @@ with st.sidebar:
                 # Al cambiar de tema, limpiar historial para nuevo contexto
                 st.session_state.chat_history = []
                 st.session_state.gemini_history = []
-                st.session_state.show_summary = False
                 st.rerun()
 
     st.divider()
-    st.markdown("**Esta sesión**")
-
-    stats = st.session_state.session_stats
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"<div class='stat-card'><div class='stat-val'>📝 {stats['ejercicios']}</div><div class='stat-lbl'>Ejercicios</div></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"<div class='stat-card'><div class='stat-val'>💡 {stats['conceptos']}</div><div class='stat-lbl'>Conceptos</div></div>", unsafe_allow_html=True)
-
-    temas = len(stats['temas_vistos'])
-    st.markdown(f"<div class='stat-card'><div class='stat-val'>📚 {temas}</div><div class='stat-lbl'>Temas explorados</div></div>", unsafe_allow_html=True)
-
-    st.divider()
-
-    if st.button("📊 Ver resumen de sesión", use_container_width=True):
-        st.session_state.show_summary = not st.session_state.show_summary
-        st.rerun()
 
     if st.button("🗑️ Nueva conversación", use_container_width=True):
         st.session_state.chat_history = []
         st.session_state.gemini_history = []
-        st.session_state.show_summary = False
         st.rerun()
 
     st.divider()
@@ -358,38 +292,6 @@ topic_clean = st.session_state.topic.split("  ", 1)[-1].strip()
 st.markdown(f"## {st.session_state.topic}")
 st.caption(f"Modo socrático activo — la IA te guía sin darte las respuestas directas")
 st.divider()
-
-# ============================================================
-# RESUMEN DE SESIÓN
-# ============================================================
-if st.session_state.show_summary:
-    st.markdown("### 📊 Resumen de esta sesión")
-    stats = st.session_state.session_stats
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f"<div class='summary-card'><div class='summary-title'>📝 Ejercicios</div><div class='stat-val' style='color:#4C8EF7'>{stats['ejercicios']}</div></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"<div class='summary-card'><div class='summary-title'>💡 Conceptos</div><div class='stat-val' style='color:#A78BFA'>{stats['conceptos']}</div></div>", unsafe_allow_html=True)
-    with c3:
-        temas_vistos = len(stats['temas_vistos'])
-        st.markdown(f"<div class='summary-card'><div class='summary-title'>📚 Temas</div><div class='stat-val' style='color:#34D399'>{temas_vistos}</div></div>", unsafe_allow_html=True)
-
-    if stats['temas_vistos']:
-        st.markdown("<div class='summary-card'><div class='summary-title'>Temas explorados esta sesión</div>" +
-            "".join([f"<div class='summary-item'>→ <span>{t}</span></div>" for t in stats['temas_vistos']]) +
-            f"<div class='summary-item' style='margin-top:8px'>Sesión iniciada a las <span>{stats['inicio']}</span></div></div>",
-            unsafe_allow_html=True)
-
-    total_consultas = stats['ejercicios'] + stats['conceptos']
-    if total_consultas >= 5:
-        st.success(f"¡Excelente sesión! Hiciste {total_consultas} consultas.")
-    elif total_consultas >= 2:
-        st.info(f"Buena sesión con {total_consultas} consultas. ¡Sigue explorando!")
-    else:
-        st.warning("Sesión corta aún. ¡Anímate a preguntar más!")
-
-    st.divider()
 
 # ============================================================
 # SUGERENCIAS DE USO (solo si no hay mensajes aún)
