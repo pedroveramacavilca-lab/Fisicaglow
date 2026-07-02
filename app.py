@@ -41,14 +41,20 @@ TOPICS = [
 def init_state():
     defaults = {
         "topic": TOPICS[0],
-        "chat_history": [],         # historial del chat visible
-        "gemini_history": [],       # historial para la API de Gemini (multi-turn)
+        # Historial separado por tema: cada tema guarda su propio chat visible
+        # y su propio historial para la API de Gemini, así al cambiar de tema
+        # no se pierde el progreso.
+        "history_by_topic": {t: {"chat": [], "gemini": []} for t in TOPICS},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 init_state()
+
+def current_history():
+    """Devuelve el dict {'chat': [...], 'gemini': [...]} del tema activo."""
+    return st.session_state.history_by_topic[st.session_state.topic]
 
 # ============================================================
 # PROMPT DEL SISTEMA — el corazón pedagógico de la app
@@ -99,9 +105,10 @@ def chat_con_tutor(mensaje_usuario, topic):
             system_instruction=build_system_prompt(topic)
         )
 
-        # Reconstruir el historial previo en formato Gemini
+        # Reconstruir el historial previo en formato Gemini (solo del tema activo)
+        hist = current_history()
         gemini_messages = []
-        for msg in st.session_state.gemini_history:
+        for msg in hist["gemini"]:
             gemini_messages.append({
                 "role": msg["role"],
                 "parts": [msg["content"]]
@@ -116,9 +123,9 @@ def chat_con_tutor(mensaje_usuario, topic):
         )
         respuesta = response.text.strip()
 
-        # Guardar el turno en el historial para la siguiente consulta
-        st.session_state.gemini_history.append({"role": "user", "content": mensaje_usuario})
-        st.session_state.gemini_history.append({"role": "model", "content": respuesta})
+        # Guardar el turno en el historial del tema activo para la siguiente consulta
+        hist["gemini"].append({"role": "user", "content": mensaje_usuario})
+        hist["gemini"].append({"role": "model", "content": respuesta})
 
         return respuesta
 
@@ -268,16 +275,16 @@ with st.sidebar:
         ):
             if t != st.session_state.topic:
                 st.session_state.topic = t
-                # Al cambiar de tema, limpiar historial para nuevo contexto
-                st.session_state.chat_history = []
-                st.session_state.gemini_history = []
+                # El historial de cada tema se conserva por separado,
+                # así que solo cambiamos cuál está activo.
                 st.rerun()
 
     st.divider()
 
-    if st.button("🗑️ Nueva conversación", use_container_width=True):
-        st.session_state.chat_history = []
-        st.session_state.gemini_history = []
+    if st.button("🗑️ Borrar chat de este tema", use_container_width=True):
+        hist = current_history()
+        hist["chat"] = []
+        hist["gemini"] = []
         st.rerun()
 
     st.divider()
@@ -293,10 +300,12 @@ st.markdown(f"## {st.session_state.topic}")
 st.caption(f"Modo socrático activo — la IA te guía sin darte las respuestas directas")
 st.divider()
 
+hist = current_history()
+
 # ============================================================
 # SUGERENCIAS DE USO (solo si no hay mensajes aún)
 # ============================================================
-if not st.session_state.chat_history:
+if not hist["chat"]:
     st.markdown("<div class='tip-box'>💬 <b>¿Cómo empezar?</b> Puedes escribir un ejercicio con sus datos, preguntar por un concepto o teorema, o pedirle que revise tu procedimiento. La IA siempre te preguntará antes de explicar.</div>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns(3)
@@ -316,18 +325,18 @@ if not st.session_state.chat_history:
 # ============================================================
 chat_container = st.container(height=480)
 with chat_container:
-    if not st.session_state.chat_history:
+    if not hist["chat"]:
         with st.chat_message("assistant"):
             st.write(f"Hola, soy PhysiQ. Estamos trabajando el tema **{topic_clean}**. Puedes traerme un ejercicio, preguntarme por un concepto, o pedirme que revise tu procedimiento. ¿Por dónde empezamos?")
     else:
-        for msg in st.session_state.chat_history:
+        for msg in hist["chat"]:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
 
 user_msg = st.chat_input(f"Escribe tu ejercicio o duda sobre {topic_clean}...")
 if user_msg:
-    st.session_state.chat_history.append({"role": "user", "content": user_msg})
+    hist["chat"].append({"role": "user", "content": user_msg})
     with st.spinner("PhysiQ está pensando..."):
         respuesta = chat_con_tutor(user_msg, st.session_state.topic)
-    st.session_state.chat_history.append({"role": "assistant", "content": respuesta})
+    hist["chat"].append({"role": "assistant", "content": respuesta})
     st.rerun()
