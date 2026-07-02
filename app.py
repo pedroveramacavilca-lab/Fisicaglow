@@ -112,7 +112,7 @@ def chat_con_tutor(mensaje_usuario, topic):
 
         response = chat.send_message(
             mensaje_usuario,
-            generation_config={"temperature": 0.7, "max_output_tokens": 1024},
+            generation_config={"temperature": 0.7, "max_output_tokens": 8192},
         )
         respuesta = response.text.strip()
 
